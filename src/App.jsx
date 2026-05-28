@@ -1142,10 +1142,7 @@ function UploadTDSPage({onAdd, db}) {
   function handlePaste() {
     if (!pasteText.trim()) { setError("Please paste some TDS text first."); return; }
     setError("");
-    runExtraction(EXTRACT_PROMPT + "
-
-TDS TEXT:
-" + pasteText);
+    runExtraction(EXTRACT_PROMPT + "\n\nTDS TEXT:\n" + pasteText);
   }
 
   // ── Save to DB ──
