@@ -994,484 +994,254 @@ function CompliancePage({db}) {
 
 
 
-/* ── ADD MATERIAL + STOCK + PRICING + COMPRESSION COMPARISON ── */
-/* ── ADD MATERIAL — TDS READER (PDF + Image + Text) ── */
-function UploadTDSPage({onAdd, db}) {
-  const [mode, setMode]       = useState("choose");  // choose | pdf | image | paste | loading | review | done
-  const [log, setLog]         = useState([]);
-  const [form, setForm]       = useState(null);
+/* ── ADD MATERIAL — PDF.js client-side reader (NO API needed) ── */
+function UploadTDSPage({ onAdd }) {
+  const [stage, setStage] = useState("input");
   const [fileName, setFileName] = useState("");
-  const [pasteText, setPasteText] = useState("");
-  const [error, setError]     = useState("");
-  const [tried, setTried]     = useState(false);
+  const [rawText, setRawText] = useState("");
+  const [log, setLog] = useState([]);
+  const [form, setForm] = useState(null);
+  const [error, setError] = useState("");
 
-  // Stock & Pricing state
-  const [stock, setStock]           = useState("");
-  const [cost, setCost]             = useState("");
+  const [stock, setStock] = useState("");
+  const [cost, setCost] = useState("");
   const [sellingPrice, setSellingPrice] = useState("");
-  const [moq, setMoq]               = useState("");
-  const [leadTime, setLeadTime]     = useState("");
-  const [currency, setCurrency]     = useState("USD");
-  const [warehouse, setWarehouse]   = useState("");
-  const [supplierPartNo, setSupplierPartNo] = useState("");
+  const [moq, setMoq] = useState("");
+  const [leadTime, setLeadTime] = useState("");
+  const [currency, setCurrency] = useState("USD");
+  const [warehouse, setWarehouse] = useState("");
 
-  const TYPES = ["Vinyl","PET (Polyester)","Polycarbonate","Foam","Reflective Film","Adhesive Tape","Thermal Transfer","Outdoor-Durable","High-Temperature Resistant"];
-  const APP_CATS = ["Indoor Labels - General / Stickers","Indoor Labels - Barcode & Product","Outdoor Labels - UV Resistant","Outdoor Labels - Weatherproof","Outdoor Labels - Chemical Resistant","Automotive - Engine Bay / Warning","Electronics - Nameplate / Insulation","Safety - Lockout / Tagout","Telecom / Electrical - Cable & Wire ID"];
-
-  const EXTRACT_PROMPT = "You are an expert TDS extraction AI. Extract ALL technical data. Return ONLY valid JSON, no markdown: {\"code\":\"\",\"name\":\"\",\"supplier\":\"\",\"substrate\":\"\",\"adhesiveType\":\"\",\"liner\":\"\",\"type\":\"Vinyl\",\"thickness_total_mm\":0,\"thickness_substrate_mm\":0,\"thickness_adhesive_mm\":0,\"adhesion_tack_gf\":0,\"adhesion_steel_15min_ozin\":0,\"adhesion_steel_24hr_ozin\":0,\"adhesion_steel_N100mm\":0,\"adhesion_powdercoat_ozin\":0,\"adhesion_pp_ozin\":0,\"adhesion_abs_ozin\":0,\"adhesion_glass_ozin\":0,\"dielectric_volts\":0,\"tempMin_C\":0,\"tempMax_C\":0,\"tempMax_shortterm_C\":0,\"minApplicationTemp_C\":0,\"environment\":\"Both\",\"uvResistant\":false,\"chemResistant\":false,\"halogenFree\":false,\"ink\":\"Thermal Transfer\",\"recommendedRibbons\":\"\",\"finish\":\"\",\"color\":\"\",\"shelfLife\":\"\",\"outdoorDurability\":\"\",\"abrasionResistance\":\"\",\"appCategory\":\"Indoor Labels - Barcode & Product\",\"applications\":\"\",\"compliance\":[],\"complianceNotes\":\"\",\"ulFileNumber\":\"\",\"csaFileNumber\":\"\",\"rohsDirective\":\"\",\"notes\":\"\",\"chemicalResistanceNotes\":\"\",\"effectiveDate\":\"\"}";
+  const TYPES = ["Vinyl", "PET (Polyester)", "Polycarbonate", "Foam", "Reflective Film", "Adhesive Tape", "Thermal Transfer", "Outdoor-Durable", "High-Temperature Resistant"];
+  const APP_CATS = ["Indoor Labels - General / Stickers", "Indoor Labels - Barcode & Product", "Outdoor Labels - UV Resistant", "Outdoor Labels - Weatherproof", "Outdoor Labels - Chemical Resistant", "Automotive - Engine Bay / Warning", "Electronics - Nameplate / Insulation", "Safety - Lockout / Tagout", "Telecom / Electrical - Cable & Wire ID"];
 
   function resetAll() {
-    setMode("choose"); setLog([]); setForm(null); setFileName(""); setPasteText(""); setError(""); setTried(false);
-    setStock(""); setCost(""); setSellingPrice(""); setMoq(""); setLeadTime("");
-    setCurrency("USD"); setWarehouse(""); setSupplierPartNo("");
+    setStage("input"); setFileName(""); setRawText(""); setLog([]); setForm(null); setError("");
+    setStock(""); setCost(""); setSellingPrice(""); setMoq(""); setLeadTime(""); setCurrency("USD"); setWarehouse("");
   }
 
-  const set = k => v => setForm(f => ({...f, [k]: v}));
-  const f = form || {};
+  function loadPdfJs() {
+    return new Promise((resolve, reject) => {
+      if (window.pdfjsLib) { resolve(window.pdfjsLib); return; }
+      const s = document.createElement("script");
+      s.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+      s.onload = () => {
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+        resolve(window.pdfjsLib);
+      };
+      s.onerror = () => reject(new Error("Failed to load PDF reader"));
+      document.body.appendChild(s);
+    });
+  }
 
-  // ── Shared log runner ──
-  async function runExtraction(apiBody) {
-    setTried(true); setMode("loading"); setLog([]);
-    const steps = [
-      "Reading document...",
-      "Extracting text layers...",
-      "Parsing thickness and adhesion values...",
-      "Reading temperature range...",
-      "Detecting compliance standards (RoHS, UL, REACH)...",
-      "Extracting applications and ribbons...",
-      "Building material record...",
-    ];
-    let i = 0;
-    const iv = setInterval(() => {
-      if (i < steps.length) setLog(l => [...l, steps[i++]]);
-      else clearInterval(iv);
-    }, 600);
-
+  async function readPdf(file) {
+    setFileName(file.name);
+    setStage("reading"); setError("");
+    setLog(["Loading PDF reader..."]);
     try {
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 2000, messages: [{ role: "user", content: apiBody }] })
-      });
-      clearInterval(iv); setLog(steps);
-      const data = await resp.json();
-      const raw = data.content.map(c => c.text || "").join("").replace(/```json|```/g, "").trim();
-      const obj = JSON.parse(raw);
-      const count = Object.values(obj).filter(v => v && v !== 0 && v !== "").length;
-      setLog(l => [...l, "Done - " + count + " fields extracted"]);
-      setForm({
-        code: obj.code || "", name: obj.name || "", supplier: obj.supplier || "",
-        substrate: obj.substrate || "", adhesiveType: obj.adhesiveType || "Permanent Acrylic",
-        liner: obj.liner || "", type: obj.type || "Vinyl",
-        thickness: obj.thickness_total_mm || "",
-        thickness_sub: obj.thickness_substrate_mm || "",
-        thickness_adh: obj.thickness_adhesive_mm || "",
-        adhesion: obj.adhesion_tack_gf || "",
-        adhesion_steel_15: obj.adhesion_steel_15min_ozin || "",
-        adhesion_steel_24: obj.adhesion_steel_24hr_ozin || "",
-        adhesion_steel_N: obj.adhesion_steel_N100mm || "",
-        adhesion_pc: obj.adhesion_powdercoat_ozin || "",
-        adhesion_pp: obj.adhesion_pp_ozin || "",
-        adhesion_abs: obj.adhesion_abs_ozin || "",
-        adhesion_glass: obj.adhesion_glass_ozin || "",
-        dielectric: obj.dielectric_volts || "",
-        tempMin: obj.tempMin_C || "", tempMax: obj.tempMax_C || "",
-        tempMaxShort: obj.tempMax_shortterm_C || "",
-        minAppTemp: obj.minApplicationTemp_C || "",
-        environment: obj.environment || "Both",
-        uvResistant: !!obj.uvResistant, chemResistant: !!obj.chemResistant,
-        halogenFree: !!obj.halogenFree,
-        ink: obj.ink || "Thermal Transfer",
-        ribbons: obj.recommendedRibbons || "",
-        finish: obj.finish || "", color: obj.color || "",
-        shelfLife: obj.shelfLife || "",
-        outdoorDurability: obj.outdoorDurability || "",
-        abrasionResistance: obj.abrasionResistance || "",
-        appCategory: obj.appCategory || "Indoor Labels - Barcode & Product",
-        applications: obj.applications || "",
-        compliance: Array.isArray(obj.compliance) ? obj.compliance : [],
-        complianceNotes: obj.complianceNotes || "",
-        ulFileNumber: obj.ulFileNumber || "",
-        csaFileNumber: obj.csaFileNumber || "",
-        rohsDirective: obj.rohsDirective || "",
-        notes: obj.notes || "",
-        chemResistanceNotes: obj.chemicalResistanceNotes || "",
-        effectiveDate: obj.effectiveDate || "",
-      });
-      setMode("review");
+      const pdfjs = await loadPdfJs();
+      setLog(l => [...l, "Reading PDF file..."]);
+      const buf = await file.arrayBuffer();
+      const pdf = await pdfjs.getDocument({ data: buf }).promise;
+      setLog(l => [...l, "Extracting text from " + pdf.numPages + " page(s)..."]);
+      let text = "";
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        text += content.items.map(it => it.str).join(" ") + "\n";
+      }
+      setRawText(text);
+      setLog(l => [...l, "Detecting material properties..."]);
+      const detected = autoDetect(text, file.name);
+      setForm(detected);
+      setLog(l => [...l, "Done - review the details below"]);
+      setStage("review");
     } catch (e) {
-      clearInterval(iv);
-      setError("Could not extract data. Try again or use Paste Text method.");
-      setMode("choose");
+      setError("Could not read this PDF automatically. Please paste the text manually below.");
+      setStage("input");
     }
   }
 
-  // ── PDF handler ──
-  async function handlePDF(file) {
-    if (!file) return;
-    setFileName(file.name);
-    const b64 = await new Promise((res, rej) => {
-      const r = new FileReader();
-      r.onload = () => res(r.result.split(",")[1]);
-      r.onerror = rej;
-      r.readAsDataURL(file);
-    });
-    runExtraction([
-      { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } },
-      { type: "text", text: EXTRACT_PROMPT }
-    ]);
+  function autoDetect(text, fname) {
+    const t = text.replace(/\s+/g, " ");
+    const num = (re) => { const m = t.match(re); return m ? m[1] : ""; };
+
+    const code = num(/\b([A-Z]{1,3}-?\d{3,4}[A-Z]?)\b/);
+    let thickness = num(/([\d.]+)\s*mm\b/i);
+    if (!thickness) {
+      const inch = num(/([\d.]+)\s*(?:inch|in\.)/i);
+      if (inch) thickness = (parseFloat(inch) * 25.4).toFixed(4);
+    }
+    const adhesionOz = num(/([\d.]+)\s*oz\s*\/?\s*in/i);
+    const adhesionG = num(/([\d.]+)\s*g(?:f|ram)?\b/i);
+    let adhesion = "";
+    if (adhesionG) adhesion = adhesionG;
+    else if (adhesionOz) adhesion = Math.round(parseFloat(adhesionOz) * 28.35).toString();
+
+    const tempMin = num(/(-?\d+)\s*(?:deg|degrees)?\s*[CcFf]\s*(?:to|-)/);
+    const tempMax = num(/(?:to|-)\s*(-?\d+)\s*(?:deg|degrees)?\s*[CcFf]/);
+
+    const compliance = [];
+    if (/\brohs\b/i.test(t)) compliance.push("RoHS");
+    if (/\breach\b/i.test(t)) compliance.push("REACH");
+    if (/\bul\b|ul969|ul recognized|ul listed/i.test(t)) compliance.push("UL");
+    if (/ce mark/i.test(t)) compliance.push("CE");
+    if (/\bcsa\b/i.test(t)) compliance.push("CSA");
+    if (/ul94|v-0/i.test(t)) compliance.push("UL94 V-0");
+    if (/astm\s*d4956/i.test(t)) compliance.push("ASTM D4956");
+    if (/din\s*vde|halogen.?free/i.test(t)) compliance.push("DIN VDE 0472");
+    if (/\bfda\b/i.test(t)) compliance.push("FDA");
+
+    const ulFile = num(/(MH\d{4,6})/i);
+
+    let type = "Vinyl";
+    if (/polyester|pet\b/i.test(t)) type = "PET (Polyester)";
+    else if (/polycarbonate/i.test(t)) type = "Polycarbonate";
+    else if (/vinyl/i.test(t)) type = "Vinyl";
+    else if (/foam/i.test(t)) type = "Foam";
+    else if (/reflective/i.test(t)) type = "Reflective Film";
+    else if (/tape/i.test(t)) type = "Adhesive Tape";
+
+    let supplier = "";
+    if (/brady/i.test(t)) supplier = "Brady Worldwide";
+    else if (/3m\b/i.test(t)) supplier = "3M";
+    else if (/avery/i.test(t)) supplier = "Avery Dennison";
+    else if (/flexcon/i.test(t)) supplier = "FLEXcon";
+    else if (/lintec/i.test(t)) supplier = "Lintec";
+
+    const firstLine = text.split("\n").map(l => l.trim()).filter(l => l.length > 8)[0] || "";
+    let name = firstLine.slice(0, 60) || (supplier + " " + code).trim();
+
+    let adhesiveType = "Permanent Acrylic";
+    if (/removable/i.test(t)) adhesiveType = "Removable";
+    else if (/rubber/i.test(t)) adhesiveType = "Rubber";
+
+    return {
+      code: code || "", name: name || "", supplier: supplier,
+      substrate: type.includes("Polyester") ? "Polyester" : type,
+      adhesiveType, type,
+      thickness: thickness || "", adhesion: adhesion || "",
+      tempMin: tempMin || "", tempMax: tempMax || "",
+      environment: /outdoor/i.test(t) ? "Outdoor" : /indoor/i.test(t) ? "Indoor" : "Both",
+      uvResistant: /uv\s*resist|uv\s*stable|outdoor/i.test(t),
+      chemResistant: /chemical\s*resist|solvent\s*resist/i.test(t),
+      halogenFree: /halogen.?free/i.test(t),
+      ink: /thermal\s*transfer/i.test(t) ? "Thermal Transfer" : /direct\s*thermal/i.test(t) ? "Direct Thermal" : "Thermal Transfer",
+      finish: /gloss/i.test(t) ? "Glossy" : /matte/i.test(t) ? "Matte" : "",
+      shelfLife: num(/([\d.]+)\s*year/i) ? num(/([\d.]+)\s*year/i) + " years" : "",
+      appCategory: "Indoor Labels - Barcode & Product",
+      applications: "",
+      compliance, complianceNotes: ulFile ? ("UL file " + ulFile) : "",
+      ulFileNumber: ulFile || "", notes: "",
+    };
   }
 
-  // ── Image handler (photo of TDS) ──
-  async function handleImage(file) {
-    if (!file) return;
-    setFileName(file.name);
-    const b64 = await new Promise((res, rej) => {
-      const r = new FileReader();
-      r.onload = () => res(r.result.split(",")[1]);
-      r.onerror = rej;
-      r.readAsDataURL(file);
-    });
-    const mime = file.type || "image/jpeg";
-    runExtraction([
-      { type: "image", source: { type: "base64", media_type: mime, data: b64 } },
-      { type: "text", text: EXTRACT_PROMPT }
-    ]);
-  }
-
-  // ── Paste text handler ──
-  function handlePaste() {
-    setTried(true);
-    if (!pasteText.trim()) { setError("Please paste some TDS text first."); return; }
+  function detectFromText() {
+    if (!rawText.trim()) { setError("Please paste some TDS text first."); return; }
     setError("");
-    runExtraction(EXTRACT_PROMPT + "\n\nTDS TEXT:\n" + pasteText);
+    setForm(autoDetect(rawText, "pasted text"));
+    setStage("review");
   }
 
-  // ── Save to DB ──
   function save() {
-    if (!form || !form.name) return;
+    if (!form || !form.name) { setError("Material name is required."); return; }
     onAdd({
-      id: Date.now(), code: f.code || f.name, name: f.name, supplier: f.supplier,
-      supplierId: "S_NEW", type: f.type, substrate: f.substrate,
-      adhesiveType: f.adhesiveType, liner: f.liner,
-      thickness: parseFloat(f.thickness) || 0,
-      adhesion: parseInt(f.adhesion) || 0,
-      adhesion_steel_15: parseFloat(f.adhesion_steel_15) || 0,
-      adhesion_steel_24: parseFloat(f.adhesion_steel_24) || 0,
-      dielectric: parseFloat(f.dielectric) || 0,
-      tempMin: parseInt(f.tempMin) || 0, tempMax: parseInt(f.tempMax) || 0,
-      environment: f.environment, ink: f.ink,
-      uvResistant: f.uvResistant, chemResistant: f.chemResistant, halogenFree: f.halogenFree,
-      finish: f.finish, color: f.color, shelfLife: f.shelfLife,
-      outdoorDurability: f.outdoorDurability, abrasionResistance: f.abrasionResistance,
-      appCategory: f.appCategory, applications: f.applications,
-      compliance: f.compliance, complianceNotes: f.complianceNotes,
-      ulFileNumber: f.ulFileNumber, csaFileNumber: f.csaFileNumber,
-      notes: f.notes, tdsFile: fileName,
+      id: Date.now(), code: form.code || form.name, name: form.name, supplier: form.supplier,
+      supplierId: "S_NEW", type: form.type, substrate: form.substrate, adhesiveType: form.adhesiveType,
+      thickness: parseFloat(form.thickness) || 0, adhesion: parseInt(form.adhesion) || 0,
+      tempMin: parseInt(form.tempMin) || 0, tempMax: parseInt(form.tempMax) || 0,
+      environment: form.environment, ink: form.ink,
+      uvResistant: form.uvResistant, chemResistant: form.chemResistant, halogenFree: form.halogenFree,
+      finish: form.finish, shelfLife: form.shelfLife,
+      appCategory: form.appCategory, applications: form.applications,
+      compliance: form.compliance, complianceNotes: form.complianceNotes,
+      ulFileNumber: form.ulFileNumber, notes: form.notes,
       cost: parseFloat(cost) || 0, stock: parseInt(stock) || 0, usage: 0,
-      sellingPrice: parseFloat(sellingPrice) || 0,
-      moq: parseInt(moq) || 0, leadTime, currency, warehouse,
-      supplierPartNo, status: "active", duplicateRisk: false,
+      sellingPrice: parseFloat(sellingPrice) || 0, moq: parseInt(moq) || 0,
+      leadTime, currency, warehouse,
+      tdsFile: fileName, status: "active", duplicateRisk: false,
     });
-    setMode("done");
+    setStage("done");
   }
 
-  const cardStyle = { padding: 22, marginBottom: 14 };
-  const IS = { width: "100%", background: T.surface, border: "1px solid " + T.border, borderRadius: 7, padding: "9px 12px", color: T.txt1, fontSize: 13, fontFamily: "inherit" };
-  const LS = { fontSize: 10, fontWeight: 700, color: T.txt4, textTransform: "uppercase", letterSpacing: .5, display: "block", marginBottom: 5 };
+  const set = k => v => setForm(f => ({ ...f, [k]: v }));
+  const f = form || {};
+  const IS = { width: "100%", background: "#f8faff", border: "1.5px solid #d1ddf7", borderRadius: 7, padding: "9px 12px", color: "#0f172a", fontSize: 13, fontFamily: "inherit", outline: "none" };
+  const LS = { fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: .5, display: "block", marginBottom: 5 };
 
-  // ── DONE ──
-  if (mode === "done") return (
+  if (stage === "done") return (
     <div style={{ padding: "40px 32px", textAlign: "center", maxWidth: 440, margin: "0 auto" }}>
-      <div style={{ width: 68, height: 68, background: T.emerald + "18", border: "2px solid " + T.emerald, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px", fontSize: 30 }}>✓</div>
-      <h2 style={{ fontSize: 20, fontWeight: 700, color: T.emerald, marginBottom: 8 }}>Material Added!</h2>
-      <p style={{ color: T.txt3, fontSize: 14, marginBottom: 24 }}><strong style={{ color: T.txt1 }}>{f.name}</strong> saved to database.</p>
-      <button className="btn-primary" onClick={resetAll}>Add Another TDS</button>
+      <div style={{ width: 68, height: 68, background: "#05966918", border: "2px solid #059669", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px", fontSize: 30 }}>✓</div>
+      <h2 style={{ fontSize: 20, fontWeight: 700, color: "#059669", marginBottom: 8 }}>Material Added!</h2>
+      <p style={{ color: "#64748b", fontSize: 14, marginBottom: 24 }}><strong style={{ color: "#0f172a" }}>{f.name}</strong> saved to database.</p>
+      <button className="btn-primary" onClick={resetAll}>Add Another</button>
     </div>
   );
 
-  // ── LOADING ──
-  if (mode === "loading") return (
+  if (stage === "reading") return (
     <div style={{ padding: "28px 32px", maxWidth: 480 }}>
-      <div style={{ fontSize: 18, fontWeight: 700, color: T.txt1, marginBottom: 20 }}>Reading TDS...</div>
+      <div style={{ fontSize: 18, fontWeight: 700, color: "#0f172a", marginBottom: 20 }}>Reading PDF...</div>
       <div className="card" style={{ padding: 24 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
-          <div className="spin" style={{ width: 22, height: 22, border: "3px solid " + T.border, borderTopColor: T.primary, borderRadius: "50%", flexShrink: 0 }} />
-          <span style={{ fontWeight: 600, color: T.primary, fontSize: 14 }}>Claude AI is reading your TDS document...</span>
+          <div className="spin" style={{ width: 22, height: 22, border: "3px solid #d1ddf7", borderTopColor: "#1a4fd6", borderRadius: "50%", flexShrink: 0 }} />
+          <span style={{ fontWeight: 600, color: "#1a4fd6", fontSize: 14 }}>Reading "{fileName}"...</span>
         </div>
         {log.map((l, i) => (
-          <div key={i} style={{ fontSize: 13, padding: "7px 10px", borderRadius: 6, marginBottom: 3, background: i === log.length - 1 ? T.primary + "12" : "transparent", color: i === log.length - 1 ? T.primary : T.txt3 }}>
-            {i === log.length - 1 ? "→ " : "✓ "}{l}
-          </div>
+          <div key={i} style={{ fontSize: 13, padding: "7px 10px", borderRadius: 6, marginBottom: 3, background: i === log.length - 1 ? "#1a4fd612" : "transparent", color: i === log.length - 1 ? "#1a4fd6" : "#64748b" }}>{l}</div>
         ))}
       </div>
     </div>
   );
 
-  // ── CHOOSE METHOD ──
-  if (mode === "choose") return (
-    <div style={{ padding: "28px 32px", maxWidth: 640 }}>
-      <div style={{ fontSize: 19, fontWeight: 700, color: T.txt1, marginBottom: 4 }}>Add Material from TDS</div>
-      <div style={{ fontSize: 13, color: T.txt3, marginBottom: 28 }}>Choose how to provide your Technical Data Sheet — Claude AI reads it and extracts all specs automatically</div>
-
-      {error && tried && (
-        <div style={{ background: T.rose + "12", border: "1px solid " + T.rose + "44", borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 13, color: T.rose }}>{error}</div>
-      )}
-
-      {/* Method 1 — PDF Upload */}
-      <div className="card" style={{ padding: 22, marginBottom: 12, borderLeft: "3px solid " + T.primary }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-          <div style={{ width: 36, height: 36, background: T.primary + "18", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>📄</div>
-          <div>
-            <div style={{ fontWeight: 700, color: T.txt1, fontSize: 14 }}>Upload PDF File</div>
-            <div style={{ fontSize: 12, color: T.txt3 }}>Select TDS PDF from your device — works on desktop</div>
-          </div>
-        </div>
-        <div>
-          <input
-            id="pdf-input"
-            type="file"
-            accept=".pdf,application/pdf"
-            style={{ display: "none" }}
-            onChange={e => { if (e.target.files && e.target.files[0]) { handlePDF(e.target.files[0]); e.target.value=""; } }}
-          />
-          <button className="btn-primary" style={{ marginBottom: 8 }} onClick={() => document.getElementById("pdf-input").click()}>
-            Select PDF File
-          </button>
-        </div>
-        <div style={{ fontSize: 11, color: T.txt4, marginTop: 6 }}>Brady B-595, B-423, 3M, Avery, FLEXcon PDFs all supported</div>
-      </div>
-
-      {/* Method 2 — Photo / Image */}
-      <div className="card" style={{ padding: 22, marginBottom: 12, borderLeft: "3px solid " + T.cyan }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-          <div style={{ width: 36, height: 36, background: T.cyan + "18", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>📷</div>
-          <div>
-            <div style={{ fontWeight: 700, color: T.txt1, fontSize: 14 }}>Take Photo / Upload Image</div>
-            <div style={{ fontSize: 12, color: T.txt3 }}>On mobile — take a photo of the TDS page. On desktop — upload a JPG/PNG scan</div>
-          </div>
-        </div>
-        <div>
-          <input
-            id="img-input"
-            type="file"
-            accept="image/*"
-            capture="environment"
-            style={{ display: "none" }}
-            onChange={e => { if (e.target.files && e.target.files[0]) { handleImage(e.target.files[0]); e.target.value=""; } }}
-          />
-          <button style={{ background: T.cyan, color: "#fff", border: "none", borderRadius: 7, padding: "10px 18px", fontWeight: 600, fontSize: 13, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6, marginBottom: 8 }}
-            onClick={() => document.getElementById("img-input").click()}>
-            Open Camera / Select Image
-          </button>
-        </div>
-        <div style={{ fontSize: 11, color: T.txt4, marginTop: 6 }}>Best for mobile — tap the button, your camera opens, photograph the TDS data table clearly</div>
-      </div>
-
-      {/* Method 3 — Paste Text */}
-      <div className="card" style={{ padding: 22, marginBottom: 12, borderLeft: "3px solid " + T.emerald }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-          <div style={{ width: 36, height: 36, background: T.emerald + "18", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>📋</div>
-          <div>
-            <div style={{ fontWeight: 700, color: T.txt1, fontSize: 14 }}>Paste TDS Text</div>
-            <div style={{ fontSize: 12, color: T.txt3 }}>Open PDF, copy all text, paste here — works everywhere including mobile</div>
-          </div>
-        </div>
-        <textarea
-          style={{ ...IS, resize: "vertical", lineHeight: 1.6, fontSize: 12, marginBottom: 10, minHeight: 140 }}
-          placeholder={"Paste the full text from your TDS document here...\n\nExample:\nBRADY B-423 THERMAL TRANSFER PRINTABLE GLOSSY WHITE POLYESTER\nThickness: 0.003 inch (0.0762mm)\nAdhesion to Stainless Steel: 51 oz/inch (56 N/100mm)\nService Temperature: -70 deg C to 110 deg C\nUL Recognized Component UL969, file MH17154\nCSA Accepted C22.2 No.0.1595, file 041833\n..."}
-          value={pasteText}
-          onChange={e => { setPasteText(e.target.value); setError(""); }}
-        />
-        <button className="btn-primary" onClick={handlePaste} style={{ padding: "10px 24px" }}>
-          Extract with AI
-        </button>
-        <div style={{ fontSize: 11, color: T.txt4, marginTop: 8 }}>How to copy on mobile: open PDF app → long press text → Select All → Copy → come back here → paste</div>
-      </div>
-
-      {/* What gets extracted */}
-      <div className="card" style={{ padding: "14px 18px" }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: T.txt4, textTransform: "uppercase", letterSpacing: .5, marginBottom: 10 }}>What Claude AI extracts from your TDS</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4 }}>
-          {["Material code & full name","Supplier / manufacturer","Substrate & adhesive type","Thickness (substrate + adhesive + total)","Adhesion: steel, PP, ABS, glass, powder coat","Adhesion tack (gf) & oz/in values","Temperature: min, max, short-term","Min application temperature","UV & chemical resistance","Dielectric strength (volts)","Recommended ribbons","Compliance: RoHS, UL file no., CSA, REACH, CE","Outdoor durability (years)","Shelf life & storage conditions","Applications & use cases","Notes & warnings"].map(t => (
-            <div key={t} style={{ fontSize: 11, color: T.txt3, display: "flex", alignItems: "flex-start", gap: 5, lineHeight: 1.4 }}>
-              <span style={{ color: T.emerald, fontSize: 9, marginTop: 3, flexShrink: 0 }}>◆</span>{t}
-            </div>
-          ))}
-        </div>
-        <div style={{ marginTop: 10, fontSize: 11, color: T.txt4, borderTop: "1px solid " + T.border, paddingTop: 8 }}>
-          Fill in manually after extraction: Cost · Stock · Selling Price · MOQ · Lead Time
-        </div>
-      </div>
-    </div>
-  );
-
-  // ── REVIEW FORM ──
-  if (mode === "review" && form) return (
+  if (stage === "review" && form) return (
     <div style={{ padding: "28px 32px", maxWidth: 820 }}>
-      <div style={{ fontSize: 19, fontWeight: 700, color: T.txt1, marginBottom: 4 }}>Review Extracted Data</div>
-      <div style={{ fontSize: 13, color: T.txt3, marginBottom: 16 }}>AI extracted these specs from your TDS — correct anything if needed, add stock details, then save.</div>
+      <div style={{ fontSize: 19, fontWeight: 700, color: "#0f172a", marginBottom: 4 }}>Review Material Details</div>
+      <div style={{ fontSize: 13, color: "#64748b", marginBottom: 16 }}>Auto-detected from your TDS - correct anything, add stock & pricing, then save.</div>
+      <div style={{ background: "#1a4fd60c", border: "1px solid #1a4fd633", borderRadius: 9, padding: "10px 16px", marginBottom: 20, fontSize: 13, color: "#1a4fd6" }}>
+        Read from: {fileName || "pasted text"}. Detected {f.compliance ? f.compliance.length : 0} compliance standard(s).
+      </div>
 
-      <div style={{ background: T.primary + "0c", border: "1px solid " + T.primary + "33", borderRadius: 9, padding: "10px 16px", marginBottom: 20, fontSize: 13, color: T.primary }}>
-        Extracted from: {fileName || "pasted text"} — {f.compliance && f.compliance.length > 0 ? f.compliance.length + " compliance standards found" : "verify compliance manually"}
-
-      {/* ── STOCK & PRICING — TOP PRIORITY — FILL IN FIRST ── */}
       <div style={{ background: "linear-gradient(135deg,#1a4fd6,#1440b8)", borderRadius: 12, padding: "20px 22px", marginBottom: 14 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
-          <span style={{ fontSize: 22 }}>📦</span>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}>Stock & Pricing Details</div>
-            <div style={{ fontSize: 12, color: "rgba(255,255,255,0.7)" }}>Fill these in — not extracted from TDS</div>
-          </div>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
-          <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: "rgba(255,255,255,0.8)", textTransform: "uppercase", letterSpacing: .5, display: "block", marginBottom: 5 }}>Current Stock (units) *</label>
-            <input type="number" placeholder="e.g. 1800" value={stock} onChange={e => setStock(e.target.value)}
-              style={{ width: "100%", background: "rgba(255,255,255,0.15)", border: "1.5px solid rgba(255,255,255,0.3)", borderRadius: 7, padding: "9px 12px", color: "#fff", fontSize: 13, fontFamily: "inherit" }}/>
-          </div>
-          <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: "rgba(255,255,255,0.8)", textTransform: "uppercase", letterSpacing: .5, display: "block", marginBottom: 5 }}>Purchase Cost (per unit) *</label>
-            <input type="number" placeholder="e.g. 6.80" value={cost} onChange={e => setCost(e.target.value)}
-              style={{ width: "100%", background: "rgba(255,255,255,0.15)", border: "1.5px solid rgba(255,255,255,0.3)", borderRadius: 7, padding: "9px 12px", color: "#fff", fontSize: 13, fontFamily: "inherit" }}/>
-          </div>
-          <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: "rgba(255,255,255,0.8)", textTransform: "uppercase", letterSpacing: .5, display: "block", marginBottom: 5 }}>Selling Price</label>
-            <input type="number" placeholder="e.g. 9.50" value={sellingPrice} onChange={e => setSellingPrice(e.target.value)}
-              style={{ width: "100%", background: "rgba(255,255,255,0.15)", border: "1.5px solid rgba(255,255,255,0.3)", borderRadius: 7, padding: "9px 12px", color: "#fff", fontSize: 13, fontFamily: "inherit" }}/>
-          </div>
-          <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: "rgba(255,255,255,0.8)", textTransform: "uppercase", letterSpacing: .5, display: "block", marginBottom: 5 }}>Currency</label>
-            <select value={currency} onChange={e => setCurrency(e.target.value)}
-              style={{ width: "100%", background: "rgba(255,255,255,0.15)", border: "1.5px solid rgba(255,255,255,0.3)", borderRadius: 7, padding: "9px 12px", color: "#fff", fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>
-              {["USD","EUR","GBP","INR","AED","SGD","JPY"].map(c => <option key={c} style={{ background: "#1a4fd6", color: "#fff" }}>{c}</option>)}
-            </select>
-          </div>
-          <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: "rgba(255,255,255,0.8)", textTransform: "uppercase", letterSpacing: .5, display: "block", marginBottom: 5 }}>MOQ</label>
-            <input type="number" placeholder="e.g. 250" value={moq} onChange={e => setMoq(e.target.value)}
-              style={{ width: "100%", background: "rgba(255,255,255,0.15)", border: "1.5px solid rgba(255,255,255,0.3)", borderRadius: 7, padding: "9px 12px", color: "#fff", fontSize: 13, fontFamily: "inherit" }}/>
-          </div>
-          <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: "rgba(255,255,255,0.8)", textTransform: "uppercase", letterSpacing: .5, display: "block", marginBottom: 5 }}>Lead Time</label>
-            <input type="text" placeholder="e.g. 2-3 weeks" value={leadTime} onChange={e => setLeadTime(e.target.value)}
-              style={{ width: "100%", background: "rgba(255,255,255,0.15)", border: "1.5px solid rgba(255,255,255,0.3)", borderRadius: 7, padding: "9px 12px", color: "#fff", fontSize: 13, fontFamily: "inherit" }}/>
-          </div>
-          <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: "rgba(255,255,255,0.8)", textTransform: "uppercase", letterSpacing: .5, display: "block", marginBottom: 5 }}>Warehouse / Location</label>
-            <input type="text" placeholder="e.g. Rack A3" value={warehouse} onChange={e => setWarehouse(e.target.value)}
-              style={{ width: "100%", background: "rgba(255,255,255,0.15)", border: "1.5px solid rgba(255,255,255,0.3)", borderRadius: 7, padding: "9px 12px", color: "#fff", fontSize: 13, fontFamily: "inherit" }}/>
-          </div>
-          <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: "rgba(255,255,255,0.8)", textTransform: "uppercase", letterSpacing: .5, display: "block", marginBottom: 5 }}>Supplier Part No.</label>
-            <input type="text" placeholder="e.g. B-423-WH" value={supplierPartNo} onChange={e => setSupplierPartNo(e.target.value)}
-              style={{ width: "100%", background: "rgba(255,255,255,0.15)", border: "1.5px solid rgba(255,255,255,0.3)", borderRadius: 7, padding: "9px 12px", color: "#fff", fontSize: 13, fontFamily: "inherit" }}/>
-          </div>
-        </div>
-        {/* Live margin calculator */}
-        {cost && sellingPrice && parseFloat(cost) > 0 && parseFloat(sellingPrice) > 0 && (
-          <div style={{ background: "rgba(255,255,255,0.12)", borderRadius: 9, padding: "12px 14px" }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "rgba(255,255,255,0.8)", marginBottom: 10, textTransform: "uppercase", letterSpacing: .4 }}>Live Margin</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-              {[
-                ["Margin Amt", currency + " " + (parseFloat(sellingPrice) - parseFloat(cost)).toFixed(2)],
-                ["Margin %", Math.round((1 - parseFloat(cost) / parseFloat(sellingPrice)) * 100) + "%"],
-                ["Stock Value", currency + " " + (parseFloat(cost) * (parseFloat(stock) || 0)).toLocaleString()],
-              ].map(([l, v]) => (
-                <div key={l} style={{ background: "rgba(255,255,255,0.15)", borderRadius: 7, padding: "8px 10px", textAlign: "center" }}>
-                  <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 15, fontWeight: 700, color: "#fff" }}>{v}</div>
-                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.6)", marginTop: 2 }}>{l}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-
-      </div>
-
-      {/* Section: Identity */}
-      <div className="card" style={{ ...cardStyle, borderLeft: "3px solid " + T.primary }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: T.primary, textTransform: "uppercase", letterSpacing: .5, marginBottom: 14 }}>Material Identity</div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 14 }}>Stock & Pricing</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          {[["Code","code","B-423"],["Name *","name","Brady B-423 Polyester"],["Supplier","supplier","Brady Worldwide"],["Substrate","substrate","White Polyester"],["Adhesive Type","adhesiveType","Permanent Acrylic"],["Liner","liner","Polyester"],["Color","color","White"],["Finish","finish","Glossy White"],["Effective Date","effectiveDate","10/05/2022"]].map(([l,k,p]) => (
-            <div key={k}>
-              <label style={LS}>{l}</label>
-              <input style={IS} placeholder={p} value={f[k]||""} onChange={e=>set(k)(e.target.value)}/>
+          {[["Stock (units)", stock, setStock, "number", "1800"], ["Cost (per unit)", cost, setCost, "number", "6.80"], ["Selling Price", sellingPrice, setSellingPrice, "number", "9.50"], ["MOQ", moq, setMoq, "number", "250"], ["Lead Time", leadTime, setLeadTime, "text", "2-3 weeks"], ["Warehouse", warehouse, setWarehouse, "text", "Rack A3"]].map(([l, v, s, ty, p]) => (
+            <div key={l}>
+              <label style={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.8)", textTransform: "uppercase", letterSpacing: .5, display: "block", marginBottom: 5 }}>{l}</label>
+              <input type={ty} placeholder={p} value={v} onChange={e => s(e.target.value)} style={{ width: "100%", background: "rgba(255,255,255,0.15)", border: "1.5px solid rgba(255,255,255,0.3)", borderRadius: 7, padding: "9px 12px", color: "#fff", fontSize: 13, fontFamily: "inherit", outline: "none" }} />
             </div>
           ))}
           <div>
-            <label style={LS}>Material Type</label>
-            <select style={IS} value={f.type||"Vinyl"} onChange={e=>set("type")(e.target.value)}>
-              {TYPES.map(v=><option key={v} style={{background:T.card}}>{v}</option>)}
+            <label style={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.8)", textTransform: "uppercase", letterSpacing: .5, display: "block", marginBottom: 5 }}>Currency</label>
+            <select value={currency} onChange={e => setCurrency(e.target.value)} style={{ width: "100%", background: "rgba(255,255,255,0.15)", border: "1.5px solid rgba(255,255,255,0.3)", borderRadius: 7, padding: "9px 12px", color: "#fff", fontSize: 13, fontFamily: "inherit", cursor: "pointer", outline: "none" }}>
+              {["USD", "EUR", "GBP", "INR", "AED", "SGD", "JPY"].map(c => <option key={c} style={{ background: "#1a4fd6" }}>{c}</option>)}
             </select>
-          </div>
-          <div>
-            <label style={LS}>Application Category</label>
-            <select style={IS} value={f.appCategory||""} onChange={e=>set("appCategory")(e.target.value)}>
-              {APP_CATS.map(v=><option key={v} style={{background:T.card}}>{v}</option>)}
-            </select>
-          </div>
-          <div>
-            <label style={LS}>Environment</label>
-            <select style={IS} value={f.environment||"Both"} onChange={e=>set("environment")(e.target.value)}>
-              {["Indoor","Outdoor","Both"].map(v=><option key={v} style={{background:T.card}}>{v}</option>)}
-            </select>
-          </div>
-          <div>
-            <label style={LS}>Ink / Print Type</label>
-            <select style={IS} value={f.ink||"Thermal Transfer"} onChange={e=>set("ink")(e.target.value)}>
-              {["Thermal Transfer","Direct Thermal","UV Inkjet","Solvent Inkjet","None"].map(v=><option key={v} style={{background:T.card}}>{v}</option>)}
-            </select>
-          </div>
-          <div style={{gridColumn:"span 2"}}>
-            <label style={LS}>Recommended Ribbons</label>
-            <input style={IS} placeholder="e.g. R6000 Halogen Free, R4400, R4900" value={f.ribbons||""} onChange={e=>set("ribbons")(e.target.value)}/>
           </div>
         </div>
       </div>
 
-      {/* Section: Physical */}
-      <div className="card" style={{ ...cardStyle, borderLeft: "3px solid " + T.cyan }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: T.cyan, textTransform: "uppercase", letterSpacing: .5, marginBottom: 14 }}>Physical Properties</div>
+      <div className="card" style={{ padding: 22, marginBottom: 14, borderLeft: "3px solid #1a4fd6" }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: "#1a4fd6", textTransform: "uppercase", letterSpacing: .5, marginBottom: 14 }}>Material Identity</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          {[
-            ["Thickness - Substrate (mm)","thickness_sub","0.0508"],
-            ["Thickness - Adhesive (mm)","thickness_adh","0.0254"],
-            ["Thickness - Total (mm)","thickness","0.0762"],
-            ["Adhesion Tack (gf)","adhesion","800"],
-            ["Adhesion to Steel 15min (oz/in)","adhesion_steel_15","51"],
-            ["Adhesion to Steel 24hr (oz/in)","adhesion_steel_24","57"],
-            ["Adhesion to Steel (N/100mm)","adhesion_steel_N","56"],
-            ["Adhesion to Powder Coat (oz/in)","adhesion_pc","51"],
-            ["Adhesion to Polypropylene (oz/in)","adhesion_pp","36"],
-            ["Adhesion to Textured ABS (oz/in)","adhesion_abs","10"],
-            ["Adhesion to Glass (oz/in)","adhesion_glass",""],
-            ["Dielectric Strength (volts)","dielectric","8400"],
-          ].map(([l,k,p]) => (
-            <div key={k}>
-              <label style={LS}>{l}</label>
-              <input type="number" style={IS} placeholder={p} value={f[k]||""} onChange={e=>set(k)(e.target.value)}/>
-            </div>
+          {[["Code", "code", "B-423"], ["Name *", "name", "Product name"], ["Supplier", "supplier", "Brady"], ["Substrate", "substrate", "Polyester"], ["Adhesive Type", "adhesiveType", "Acrylic"], ["Finish", "finish", "Glossy"], ["Shelf Life", "shelfLife", "2 years"]].map(([l, k, p]) => (
+            <div key={k}><label style={LS}>{l}</label><input style={IS} placeholder={p} value={f[k] || ""} onChange={e => set(k)(e.target.value)} /></div>
           ))}
+          <div><label style={LS}>Type</label><select style={IS} value={f.type} onChange={e => set("type")(e.target.value)}>{TYPES.map(v => <option key={v}>{v}</option>)}</select></div>
+          <div><label style={LS}>Category</label><select style={IS} value={f.appCategory} onChange={e => set("appCategory")(e.target.value)}>{APP_CATS.map(v => <option key={v}>{v}</option>)}</select></div>
+          <div><label style={LS}>Environment</label><select style={IS} value={f.environment} onChange={e => set("environment")(e.target.value)}>{["Indoor", "Outdoor", "Both"].map(v => <option key={v}>{v}</option>)}</select></div>
+          <div><label style={LS}>Ink Type</label><select style={IS} value={f.ink} onChange={e => set("ink")(e.target.value)}>{["Thermal Transfer", "Direct Thermal", "UV Inkjet", "None"].map(v => <option key={v}>{v}</option>)}</select></div>
         </div>
       </div>
 
-      {/* Section: Temperature */}
-      <div className="card" style={{ ...cardStyle, borderLeft: "3px solid " + T.amber }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: T.amber, textTransform: "uppercase", letterSpacing: .5, marginBottom: 14 }}>Temperature and Environment</div>
+      <div className="card" style={{ padding: 22, marginBottom: 14, borderLeft: "3px solid #0ea5e9" }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: "#0ea5e9", textTransform: "uppercase", letterSpacing: .5, marginBottom: 14 }}>Physical Properties</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
-          {[["Min Service Temp (C)","tempMin","-70"],["Max Service Temp (C)","tempMax","110"],["Max Short-Term Temp (C)","tempMaxShort","180"],["Min Application Temp (C)","minAppTemp",""],["Outdoor Durability","outdoorDurability","e.g. 8-10 years"],["Abrasion Resistance","abrasionResistance","e.g. 100 cycles CS-10"],["Shelf Life","shelfLife","2 years"]].map(([l,k,p]) => (
-            <div key={k}>
-              <label style={LS}>{l}</label>
-              <input style={IS} placeholder={p} value={f[k]||""} onChange={e=>set(k)(e.target.value)}/>
-            </div>
+          {[["Thickness (mm)", "thickness", "0.0762"], ["Adhesion (gf)", "adhesion", "800"], ["Min Temp (C)", "tempMin", "-70"], ["Max Temp (C)", "tempMax", "110"]].map(([l, k, p]) => (
+            <div key={k}><label style={LS}>{l}</label><input type="number" style={IS} placeholder={p} value={f[k] || ""} onChange={e => set(k)(e.target.value)} /></div>
           ))}
         </div>
         <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
-          {[["uvResistant","UV Resistant"],["chemResistant","Chemical Resistant"],["halogenFree","Halogen-Free"]].map(([k,l]) => (
-            <label key={k} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12, color: T.txt2 }}>
-              <div onClick={() => set(k)(!f[k])} style={{ width: 36, height: 20, borderRadius: 10, background: f[k] ? T.primary : T.border2, position: "relative", cursor: "pointer", transition: "background .2s", flexShrink: 0 }}>
+          {[["uvResistant", "UV Resistant"], ["chemResistant", "Chemical Resistant"], ["halogenFree", "Halogen-Free"]].map(([k, l]) => (
+            <label key={k} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12, color: "#334155" }}>
+              <div onClick={() => set(k)(!f[k])} style={{ width: 36, height: 20, borderRadius: 10, background: f[k] ? "#1a4fd6" : "#cbd5e1", position: "relative", cursor: "pointer", flexShrink: 0 }}>
                 <div style={{ position: "absolute", top: 2, left: f[k] ? 17 : 2, width: 16, height: 16, borderRadius: "50%", background: "#fff", transition: "left .2s" }} />
               </div>{l}
             </label>
@@ -1479,50 +1249,30 @@ function UploadTDSPage({onAdd, db}) {
         </div>
       </div>
 
-      {/* Section: Compliance */}
-      <div className="card" style={{ ...cardStyle, borderLeft: "3px solid " + T.emerald }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: T.emerald, textTransform: "uppercase", letterSpacing: .5, marginBottom: 12 }}>Compliance & Regulatory</div>
+      <div className="card" style={{ padding: 22, marginBottom: 14, borderLeft: "3px solid #059669" }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: "#059669", textTransform: "uppercase", letterSpacing: .5, marginBottom: 12 }}>Compliance (tap to toggle)</div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
           {Object.keys(COMPLIANCE_STANDARDS).map(std => {
             const s = COMPLIANCE_STANDARDS[std];
-            const active = (f.compliance||[]).includes(std);
+            const active = (f.compliance || []).includes(std);
             return (
-              <span key={std} onClick={() => set("compliance")(active ? (f.compliance||[]).filter(c=>c!==std) : [...(f.compliance||[]),std])}
-                style={{ cursor: "pointer", padding: "6px 12px", borderRadius: 6, fontSize: 12, fontWeight: 600, border: "1px solid " + (active?s.color:T.border), background: active?s.color+"18":"transparent", color: active?s.color:T.txt4, transition: "all .15s" }}>
+              <span key={std} onClick={() => set("compliance")(active ? (f.compliance || []).filter(c => c !== std) : [...(f.compliance || []), std])}
+                style={{ cursor: "pointer", padding: "6px 12px", borderRadius: 6, fontSize: 12, fontWeight: 600, border: "1px solid " + (active ? s.color : "#d1ddf7"), background: active ? s.color + "18" : "transparent", color: active ? s.color : "#94a3b8" }}>
                 {s.icon} {std}
               </span>
             );
           })}
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          {[["Compliance Notes","complianceNotes","UL969 MH17154, CSA C22.2"],["UL File No.","ulFileNumber","MH17154"],["CSA File No.","csaFileNumber","041833"],["RoHS Directive","rohsDirective","2002/95/EC"]].map(([l,k,p]) => (
-            <div key={k}>
-              <label style={LS}>{l}</label>
-              <input style={IS} placeholder={p} value={f[k]||""} onChange={e=>set(k)(e.target.value)}/>
-            </div>
-          ))}
-        </div>
+        <div><label style={LS}>Compliance Notes</label><input style={IS} value={f.complianceNotes || ""} onChange={e => set("complianceNotes")(e.target.value)} placeholder="UL file MH17154" /></div>
       </div>
 
-      {/* Section: Applications */}
-      <div className="card" style={{ ...cardStyle, borderLeft: "3px solid " + T.txt4 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: T.txt4, textTransform: "uppercase", letterSpacing: .5, marginBottom: 12 }}>Applications and Notes</div>
-        <div style={{ display: "grid", gap: 12 }}>
-          <div>
-            <label style={LS}>Applications / Use Cases</label>
-            <textarea style={{ ...IS, resize: "vertical" }} rows={2} placeholder="PCB/Component ID, Barcode Labels, Rating Plates, Solar Panel ID" value={f.applications||""} onChange={e=>set("applications")(e.target.value)}/>
-          </div>
-          <div>
-            <label style={LS}>Notes / Warnings</label>
-            <textarea style={{ ...IS, resize: "vertical" }} rows={2} placeholder="UL Recognized outdoor on glass/polyester. Halogen-free." value={f.notes||""} onChange={e=>set("notes")(e.target.value)}/>
-          </div>
-          <div>
-            <label style={LS}>Chemical Resistance Notes</label>
-            <textarea style={{ ...IS, resize: "vertical" }} rows={2} placeholder="Resists IPA, mineral spirits. Fails on acetone, toluene." value={f.chemResistanceNotes||""} onChange={e=>set("chemResistanceNotes")(e.target.value)}/>
-          </div>
-        </div>
+      <div className="card" style={{ padding: 22, marginBottom: 14, borderLeft: "3px solid #94a3b8" }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: .5, marginBottom: 12 }}>Applications & Notes</div>
+        <div style={{ marginBottom: 12 }}><label style={LS}>Applications</label><textarea style={{ ...IS, resize: "vertical" }} rows={2} value={f.applications || ""} onChange={e => set("applications")(e.target.value)} placeholder="PCB labels, barcode" /></div>
+        <div><label style={LS}>Notes</label><textarea style={{ ...IS, resize: "vertical" }} rows={2} value={f.notes || ""} onChange={e => set("notes")(e.target.value)} placeholder="Special properties" /></div>
       </div>
 
+      {error && <div style={{ color: "#dc2626", fontSize: 13, marginBottom: 12 }}>{error}</div>}
       <div style={{ display: "flex", gap: 10, paddingBottom: 32 }}>
         <button className="btn-primary" onClick={save} style={{ padding: "12px 32px", fontSize: 14 }}>Save to Database</button>
         <button className="btn-secondary" onClick={resetAll}>Start Over</button>
@@ -1530,7 +1280,34 @@ function UploadTDSPage({onAdd, db}) {
     </div>
   );
 
-  return null;
+  return (
+    <div style={{ padding: "28px 32px", maxWidth: 640 }}>
+      <div style={{ fontSize: 19, fontWeight: 700, color: "#0f172a", marginBottom: 4 }}>Add Material from TDS</div>
+      <div style={{ fontSize: 13, color: "#64748b", marginBottom: 24 }}>Upload your TDS PDF - it reads the text on your device and auto-fills details. No API needed.</div>
+      {error && <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 13, color: "#dc2626" }}>{error}</div>}
+
+      <div className="card" style={{ padding: 22, marginBottom: 14, borderLeft: "3px solid #1a4fd6" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+          <div style={{ width: 36, height: 36, background: "#dce8ff", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>📄</div>
+          <div><div style={{ fontWeight: 700, color: "#0f172a", fontSize: 14 }}>Upload TDS PDF</div><div style={{ fontSize: 12, color: "#64748b" }}>Reads text instantly on your device</div></div>
+        </div>
+        <input id="pdf-in" type="file" accept=".pdf,application/pdf" style={{ display: "none" }} onChange={e => { if (e.target.files && e.target.files[0]) { readPdf(e.target.files[0]); e.target.value = ""; } }} />
+        <button className="btn-primary" onClick={() => document.getElementById("pdf-in").click()}>Select PDF File</button>
+        <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 8 }}>Brady, 3M, Avery, FLEXcon text-based PDFs work best</div>
+      </div>
+
+      <div className="card" style={{ padding: 22, borderLeft: "3px solid #059669" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+          <div style={{ width: 36, height: 36, background: "#dcfce7", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>📋</div>
+          <div><div style={{ fontWeight: 700, color: "#0f172a", fontSize: 14 }}>Or Paste TDS Text</div><div style={{ fontSize: 12, color: "#64748b" }}>Copy text from PDF and paste here</div></div>
+        </div>
+        <textarea style={{ ...IS, resize: "vertical", minHeight: 120, lineHeight: 1.6, fontSize: 12, marginBottom: 10 }}
+          placeholder={"Paste TDS text. Example: Brady B-423 Polyester, Thickness 0.0762mm, Adhesion to Steel 51 oz/in, Temperature -70C to 110C, UL969 MH17154, RoHS, Thermal Transfer"}
+          value={rawText} onChange={e => { setRawText(e.target.value); setError(""); }} />
+        <button className="btn-primary" onClick={detectFromText}>Auto-Detect & Continue</button>
+      </div>
+    </div>
+  );
 }
 
 /* ── COST COMPARISON PAGE ── */
