@@ -1003,6 +1003,7 @@ function UploadTDSPage({onAdd, db}) {
   const [fileName, setFileName] = useState("");
   const [pasteText, setPasteText] = useState("");
   const [error, setError]     = useState("");
+  const [tried, setTried]     = useState(false);
 
   // Stock & Pricing state
   const [stock, setStock]           = useState("");
@@ -1020,7 +1021,7 @@ function UploadTDSPage({onAdd, db}) {
   const EXTRACT_PROMPT = "You are an expert TDS extraction AI. Extract ALL technical data. Return ONLY valid JSON, no markdown: {\"code\":\"\",\"name\":\"\",\"supplier\":\"\",\"substrate\":\"\",\"adhesiveType\":\"\",\"liner\":\"\",\"type\":\"Vinyl\",\"thickness_total_mm\":0,\"thickness_substrate_mm\":0,\"thickness_adhesive_mm\":0,\"adhesion_tack_gf\":0,\"adhesion_steel_15min_ozin\":0,\"adhesion_steel_24hr_ozin\":0,\"adhesion_steel_N100mm\":0,\"adhesion_powdercoat_ozin\":0,\"adhesion_pp_ozin\":0,\"adhesion_abs_ozin\":0,\"adhesion_glass_ozin\":0,\"dielectric_volts\":0,\"tempMin_C\":0,\"tempMax_C\":0,\"tempMax_shortterm_C\":0,\"minApplicationTemp_C\":0,\"environment\":\"Both\",\"uvResistant\":false,\"chemResistant\":false,\"halogenFree\":false,\"ink\":\"Thermal Transfer\",\"recommendedRibbons\":\"\",\"finish\":\"\",\"color\":\"\",\"shelfLife\":\"\",\"outdoorDurability\":\"\",\"abrasionResistance\":\"\",\"appCategory\":\"Indoor Labels - Barcode & Product\",\"applications\":\"\",\"compliance\":[],\"complianceNotes\":\"\",\"ulFileNumber\":\"\",\"csaFileNumber\":\"\",\"rohsDirective\":\"\",\"notes\":\"\",\"chemicalResistanceNotes\":\"\",\"effectiveDate\":\"\"}";
 
   function resetAll() {
-    setMode("choose"); setLog([]); setForm(null); setFileName(""); setPasteText(""); setError("");
+    setMode("choose"); setLog([]); setForm(null); setFileName(""); setPasteText(""); setError(""); setTried(false);
     setStock(""); setCost(""); setSellingPrice(""); setMoq(""); setLeadTime("");
     setCurrency("USD"); setWarehouse(""); setSupplierPartNo("");
   }
@@ -1030,7 +1031,7 @@ function UploadTDSPage({onAdd, db}) {
 
   // ── Shared log runner ──
   async function runExtraction(apiBody) {
-    setMode("loading"); setLog([]);
+    setTried(true); setMode("loading"); setLog([]);
     const steps = [
       "Reading document...",
       "Extracting text layers...",
@@ -1140,6 +1141,7 @@ function UploadTDSPage({onAdd, db}) {
 
   // ── Paste text handler ──
   function handlePaste() {
+    setTried(true);
     if (!pasteText.trim()) { setError("Please paste some TDS text first."); return; }
     setError("");
     runExtraction(EXTRACT_PROMPT + "\n\nTDS TEXT:\n" + pasteText);
@@ -1212,7 +1214,7 @@ function UploadTDSPage({onAdd, db}) {
       <div style={{ fontSize: 19, fontWeight: 700, color: T.txt1, marginBottom: 4 }}>Add Material from TDS</div>
       <div style={{ fontSize: 13, color: T.txt3, marginBottom: 28 }}>Choose how to provide your Technical Data Sheet — Claude AI reads it and extracts all specs automatically</div>
 
-      {error && (
+      {error && tried && (
         <div style={{ background: T.rose + "12", border: "1px solid " + T.rose + "44", borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 13, color: T.rose }}>{error}</div>
       )}
 
