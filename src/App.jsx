@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -486,11 +486,12 @@ function MaterialsPage({db,setDb,onSelect}) {
 }
 
 /* ── MATERIAL DETAIL ── */
-function MaterialDetail({material,db,onBack}) {
+function MaterialDetail({material,db,onBack,onCompare}) {
   const [tab,setTab]=useState("specs");
   if(!material) return null;
   const m=material;
   const similar=db.filter(x=>x.id!==m.id&&Math.abs(x.thickness-m.thickness)<=0.025&&x.environment===m.environment).slice(0,4);
+
 
   const specRows=[
     ["Material Type",m.type],["Substrate",m.substrate],["Thickness",m.thickness + "mm"],
@@ -522,8 +523,7 @@ function MaterialDetail({material,db,onBack}) {
             <div style={{fontSize:13,color:T.txt3,marginTop:4}}>{m.supplier} · {m.substrate}</div>
           </div>
           <div style={{display:"flex",gap:8}}>
-            <button className="btn-secondary">Export PDF</button>
-            <button className="btn-primary">Add to Compare</button>
+            <button className="btn-primary" onClick={()=>{ if(onCompare) onCompare(m); }}>Add to Compare</button>
           </div>
         </div>
         <div style={{display:"flex",gap:6,marginTop:14,flexWrap:"wrap"}}>
@@ -1311,7 +1311,7 @@ function UploadTDSPage({ onAdd }) {
 }
 
 /* ── COST COMPARISON PAGE ── */
-function ComparisonPage({db}) {
+function ComparisonPage({db, seed, clearSeed}) {
   const CURRENCIES = ["USD","EUR","GBP","INR","AED","SGD","JPY"];
   const PRICE_UNITS = ["per m2","per roll","per sheet","per unit","per kg","per liner metre"];
 
@@ -1322,27 +1322,37 @@ function ComparisonPage({db}) {
     compliance:[], notes:"",
   });
 
-  const [left, setLeft]   = useState(blank());
+  const seedData = (mat) => ({
+    name: mat.name, supplier: mat.supplier, type: mat.type,
+    thickness: mat.thickness, adhesion: mat.adhesion,
+    tempMax: mat.tempMax, environment: mat.environment,
+    uvResistant: mat.uvResistant, chemResistant: mat.chemResistant,
+    ink: mat.ink, stock: mat.stock, cost: mat.cost,
+    sellingPrice: mat.sellingPrice || "",
+    moq: mat.moq || "", leadTime: mat.leadTime || "",
+    compliance: mat.compliance || [], notes: mat.notes || "",
+  });
+
+  const [left, setLeft]   = useState(seed ? seedData(seed) : blank());
   const [right, setRight] = useState(blank());
   const [currency, setCurrency] = useState("USD");
   const [priceUnit, setPriceUnit] = useState("per m2");
   const [pickMode, setPickMode] = useState(null); // "left" | "right" | null
   const [compared, setCompared] = useState(false);
 
+  // Load material sent from the detail page into Material A
+  useEffect(() => {
+    if (seed) {
+      setLeft(seedData(seed));
+      if (clearSeed) clearSeed();
+    }
+  }, [seed]);
+
   const setL = k => v => setLeft(p  => ({...p, [k]: v}));
   const setR = k => v => setRight(p => ({...p, [k]: v}));
 
   function pickFromDB(mat, side) {
-    const data = {
-      name: mat.name, supplier: mat.supplier, type: mat.type,
-      thickness: mat.thickness, adhesion: mat.adhesion,
-      tempMax: mat.tempMax, environment: mat.environment,
-      uvResistant: mat.uvResistant, chemResistant: mat.chemResistant,
-      ink: mat.ink, stock: mat.stock, cost: mat.cost,
-      sellingPrice: mat.sellingPrice || "",
-      moq: mat.moq || "", leadTime: mat.leadTime || "",
-      compliance: mat.compliance || [], notes: mat.notes || "",
-    };
+    const data = seedData(mat);
     if (side === "left")  setLeft(data);
     if (side === "right") setRight(data);
     setPickMode(null);
@@ -1441,39 +1451,60 @@ function ComparisonPage({db}) {
       </div>
 
       {/* ── COLUMN HEADERS ── */}
-      <div style={{display:"grid", gridTemplateColumns:"1fr 40px 1fr", gap:0, marginBottom:16}}>
-        {[["left","Material A — Existing / Reference"], ["right","Material B — New / Alternative"]].map(([side, title]) => (
-          <div key={side} style={{background:side==="left"?T.primary+"18":T.cyan+"18", border:"1px solid "+(side==="left"?T.primary:T.cyan)+"44", borderRadius:10, padding:"14px 18px"}}>
-            <div style={{fontWeight:700, color:side==="left"?T.primary:T.cyan, fontSize:14, marginBottom:8}}>{title}</div>
-            <div style={{display:"flex", gap:8}}>
-              <button className="btn-secondary" style={{fontSize:11, padding:"4px 12px"}}
-                onClick={()=>setPickMode(pickMode===side?null:side)}>
-                {pickMode===side ? "Cancel" : "Pick from Database"}
-              </button>
-              {(side==="left"?left:right).name && (
-                <span style={{fontSize:12, color:T.txt3, alignSelf:"center"}}>
-                  {(side==="left"?left:right).name}
-                </span>
-              )}
-            </div>
-            {/* DB picker dropdown */}
-            {pickMode===side && (
-              <div style={{marginTop:10, background:T.card, border:"1px solid "+T.border, borderRadius:8, overflow:"hidden", maxHeight:200, overflowY:"auto"}}>
-                {db.map(m=>(
-                  <div key={m.id} onClick={()=>pickFromDB(m,side)}
-                    style={{padding:"9px 14px", cursor:"pointer", borderBottom:"1px solid "+T.border, fontSize:13, color:T.txt2, display:"flex", justifyContent:"space-between", alignItems:"center"}}
-                    onMouseOver={e=>e.currentTarget.style.background=T.cardHover}
-                    onMouseOut={e=>e.currentTarget.style.background="transparent"}>
-                    <span><strong style={{color:T.txt1}}>{m.code}</strong> — {m.name}</span>
-                    <span className="mono" style={{fontSize:11, color:T.txt4}}>{m.thickness}mm · {m.adhesion}gf</span>
-                  </div>
-                ))}
-              </div>
-            )}
+      <div style={{display:"grid", gridTemplateColumns:"1fr 40px 1fr", gap:0, marginBottom:16, alignItems:"start"}}>
+        {/* Material A */}
+        <div style={{background:T.primary+"18", border:"1px solid "+T.primary+"44", borderRadius:10, padding:"14px 18px"}}>
+          <div style={{fontWeight:700, color:T.primary, fontSize:14, marginBottom:8}}>Material A — Existing / Reference</div>
+          <div style={{display:"flex", gap:8, flexWrap:"wrap"}}>
+            <button className="btn-secondary" style={{fontSize:11, padding:"4px 12px"}}
+              onClick={()=>setPickMode(pickMode==="left"?null:"left")}>
+              {pickMode==="left" ? "Cancel" : "Pick from Database"}
+            </button>
+            {left.name && <span style={{fontSize:12, color:T.txt3, alignSelf:"center"}}>{left.name}</span>}
           </div>
-        ))}
-        <div style={{display:"flex", alignItems:"center", justifyContent:"center"}}>
+          {pickMode==="left" && (
+            <div style={{marginTop:10, background:T.card, border:"1px solid "+T.border, borderRadius:8, overflow:"hidden", maxHeight:220, overflowY:"auto"}}>
+              {db.map(m=>(
+                <div key={m.id} onClick={()=>pickFromDB(m,"left")}
+                  style={{padding:"9px 14px", cursor:"pointer", borderBottom:"1px solid "+T.border, fontSize:13, color:T.txt2, display:"flex", justifyContent:"space-between", alignItems:"center"}}
+                  onMouseOver={e=>e.currentTarget.style.background=T.cardHover}
+                  onMouseOut={e=>e.currentTarget.style.background="transparent"}>
+                  <span><strong style={{color:T.txt1}}>{m.code}</strong> — {m.name}</span>
+                  <span className="mono" style={{fontSize:11, color:T.txt4}}>{m.thickness}mm</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Swap arrow (middle column) */}
+        <div style={{display:"flex", alignItems:"center", justifyContent:"center", paddingTop:14}}>
           <div style={{fontSize:20, color:T.txt4}}>⇌</div>
+        </div>
+
+        {/* Material B */}
+        <div style={{background:T.cyan+"18", border:"1px solid "+T.cyan+"44", borderRadius:10, padding:"14px 18px"}}>
+          <div style={{fontWeight:700, color:T.cyan, fontSize:14, marginBottom:8}}>Material B — New / Alternative</div>
+          <div style={{display:"flex", gap:8, flexWrap:"wrap"}}>
+            <button className="btn-secondary" style={{fontSize:11, padding:"4px 12px"}}
+              onClick={()=>setPickMode(pickMode==="right"?null:"right")}>
+              {pickMode==="right" ? "Cancel" : "Pick from Database"}
+            </button>
+            {right.name && <span style={{fontSize:12, color:T.txt3, alignSelf:"center"}}>{right.name}</span>}
+          </div>
+          {pickMode==="right" && (
+            <div style={{marginTop:10, background:T.card, border:"1px solid "+T.border, borderRadius:8, overflow:"hidden", maxHeight:220, overflowY:"auto"}}>
+              {db.map(m=>(
+                <div key={m.id} onClick={()=>pickFromDB(m,"right")}
+                  style={{padding:"9px 14px", cursor:"pointer", borderBottom:"1px solid "+T.border, fontSize:13, color:T.txt2, display:"flex", justifyContent:"space-between", alignItems:"center"}}
+                  onMouseOver={e=>e.currentTarget.style.background=T.cardHover}
+                  onMouseOut={e=>e.currentTarget.style.background="transparent"}>
+                  <span><strong style={{color:T.txt1}}>{m.code}</strong> — {m.name}</span>
+                  <span className="mono" style={{fontSize:11, color:T.txt4}}>{m.thickness}mm</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -2044,6 +2075,7 @@ export default function App() {
   const [db, setDb]                         = useState(MATERIALS);
   const [selectedMaterial, setSelectedMaterial] = useState(null);
   const [detailFrom, setDetailFrom]         = useState(null);
+  const [compareSeed, setCompareSeed]       = useState(null);
 
   // Show login if not authenticated
   if (!user) return (<><LoginPage onLogin={setUser}/></>);
@@ -2145,9 +2177,9 @@ export default function App() {
           {page==="compliance" && <CompliancePage db={db}/>}
           {page==="stock"      && <StockPricingPage db={db} setDb={setDb}/>}
           {page==="upload"     && <UploadTDSPage onAdd={m=>{setDb(d=>[...d,m]);setPage("stock");}} db={db}/>}
-          {page==="compare"    && <ComparisonPage db={db}/>}
+          {page==="compare"    && <ComparisonPage db={db} seed={compareSeed} clearSeed={()=>setCompareSeed(null)}/>}
           {page==="suppliers"  && <SuppliersPage suppliers={SUPPLIERS} db={db}/>}
-          {page==="detail"     && selectedMaterial && <MaterialDetail material={selectedMaterial} db={db} onBack={closeDetail}/>}
+          {page==="detail"     && selectedMaterial && <MaterialDetail material={selectedMaterial} db={db} onBack={closeDetail} onCompare={(mat)=>{setCompareSeed(mat);setPage("compare");}}/>}
         </div>
       </div>
     </div>
